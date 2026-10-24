@@ -524,6 +524,12 @@ class TestHondaBoschSafety(HondaPcmEnableBase, TestHondaBoschSafetyBase):
     self.safety.set_safety_hooks(CarParams.SafetyModel.hondaBosch, 0)
     self.safety.init_tests()
 
+  def test_buttons_fwd(self):
+    # SCM_BUTTONS is only proxied on radarless, always forward otherwise
+    for controls_allowed in (True, False):
+      self.safety.set_controls_allowed(controls_allowed)
+      self.assertEqual(2, self.safety.safety_fwd_hook(0, 0x296))
+
 
 class TestHondaBoschAltBrakeSafety(HondaPcmEnableBase, TestHondaBoschAltBrakeSafetyBase):
   """
@@ -601,6 +607,20 @@ class TestHondaBoschRadarlessSafetyBase(TestHondaBoschSafetyBase):
     self.packer = CANPackerSafety("honda_bosch_radarless_generated")
     self.safety = libsafety_py.libsafety
 
+  def test_buttons_fwd(self):
+    # SCM_BUTTONS (0x296) forwards to the camera only when disengaged, openpilot proxies it while engaged
+    self.safety.set_controls_allowed(False)
+    self.assertEqual(2, self.safety.safety_fwd_hook(0, 0x296))
+    self.safety.set_controls_allowed(True)
+    self.assertEqual(-1, self.safety.safety_fwd_hook(0, 0x296))
+
+  def test_lkas_setting_tx(self):
+    # proxied LKAS setting (CRUISE_SETTING=1) with no cruise button is only allowed while engaged
+    for controls_allowed in (True, False):
+      self.safety.set_controls_allowed(controls_allowed)
+      msg = self.packer.make_can_msg_safety("SCM_BUTTONS", self.BUTTONS_BUS, {"CRUISE_BUTTONS": 0, "CRUISE_SETTING": 1})
+      self.assertEqual(controls_allowed, self._tx(msg))
+
 
 class TestHondaBoschRadarlessSafety(HondaPcmEnableBase, TestHondaBoschRadarlessSafetyBase):
   """
@@ -629,7 +649,7 @@ class TestHondaBoschRadarlessLongSafety(common.LongitudinalAccelSafetyTest, Hond
   """
     Covers the Honda Bosch Radarless safety mode with longitudinal control
   """
-  TX_MSGS = [[0xE4, 0], [0x33D, 0], [0x1C8, 0], [0x30C, 0]]
+  TX_MSGS = [[0xE4, 0], [0x33D, 0], [0x1C8, 0], [0x30C, 0], [0x296, 2]]
   FWD_BLACKLISTED_ADDRS = {2: [0xE4, 0x33D, 0x1C8, 0x30C]}
   RELAY_MALFUNCTION_ADDRS = {0: (0xE4, 0x1C8, 0x30C, 0x33D)}
 
