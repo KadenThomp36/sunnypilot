@@ -93,6 +93,13 @@ static int HONDA_GET_INTERCEPTOR(const CANPacket_t *msg) {
   return (int)avg;
 }
 
+// Radarless: while engaged (ACC, or MADS lateral that openpilot also reports through its heartbeat), openpilot proxies
+// SCM_BUTTONS to the camera instead of the panda forwarding it, so the driver's LKAS button can't turn on stock LKAS,
+// whose steering wheel nag cancels stock ACC and blocks engaging it
+static bool honda_radarless_buttons_proxied(void) {
+  return honda_bosch_radarless && (controls_allowed || (controls_allowed_lateral && heartbeat_engaged_mads));
+}
+
 static void honda_rx_hook(const CANPacket_t *msg) {
   const bool pcm_cruise = ((honda_hw == HONDA_BOSCH) && !honda_bosch_long) || ((honda_hw == HONDA_NIDEC) && !enable_gas_interceptor);
   unsigned int pt_bus = honda_get_pt_bus();
@@ -315,7 +322,11 @@ static bool honda_tx_hook(const CANPacket_t *msg) {
   // ensuring that only the cancel button press is sent (VAL 2) when controls are off.
   // This avoids unintended engagements while still allowing resume spam
   if ((msg->addr == 0x296U) && !controls_allowed && (msg->bus == bus_buttons)) {
-    if (((msg->data[0] >> 5) & 0x7U) != 2U) {
+    const int button = (msg->data[0] >> 5) & 0x7U;
+    // Radarless with only MADS lateral engaged: openpilot proxies the driver's buttons to the camera, so allow
+    // no button, or exactly the cruise button the driver is pressing right now
+    const bool proxied_driver_button = honda_radarless_buttons_proxied() && ((button == 0) || (button == cruise_button_prev));
+    if ((button != 2) && !proxied_driver_button) {
       tx = false;
     }
   }
@@ -526,9 +537,8 @@ const safety_hooks honda_nidec_hooks = {
 static bool honda_bosch_fwd_hook(int bus_num, int addr) {
   bool block_msg = false;
 
-  // For radarless, OP proxies SCM_BUTTONS (0x296) to the camera when engaged so the driver's LKAS button
-  // can't turn on stock LKAS, whose steering wheel nag cancels stock ACC. Only forward when disengaged.
-  if (honda_bosch_radarless && controls_allowed && (bus_num == 0) && (addr == 0x296)) {
+  // Radarless: openpilot proxies SCM_BUTTONS (0x296) to the camera while engaged, only forward when disengaged
+  if (honda_radarless_buttons_proxied() && (bus_num == 0) && (addr == 0x296)) {
     block_msg = true;
   }
 

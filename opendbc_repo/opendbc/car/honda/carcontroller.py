@@ -257,11 +257,12 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
                                                                    self.last_button_frame, self.CAN)
     can_sends.extend(icbm_sends)
 
-    # Radarless: when stock LKAS is active, its touch steering wheel nag cancels stock ACC. While engaged, the panda
-    # stops forwarding SCM_BUTTONS to the camera and we proxy it: the driver's buttons pass through, except LKAS,
-    # and stock LKAS gets turned off with a button press of our own if it was already on.
+    # Radarless: when stock LKAS is active, its touch steering wheel nag cancels stock ACC, and blocks engaging it
+    # until the driver torques the wheel. While engaged (ACC or MADS lateral, matching the panda), the panda stops
+    # forwarding SCM_BUTTONS to the camera and we proxy it: the driver's buttons pass through, except LKAS, and
+    # stock LKAS gets turned off with a button press of our own if it was already on.
     # Based on commaai/opendbc#3498, see commaai/openpilot#36015
-    if self.CP.carFingerprint in HONDA_BOSCH_RADARLESS and CC.enabled and self.frame % 4 == 0 and \
+    if self.CP.carFingerprint in HONDA_BOSCH_RADARLESS and (CC.enabled or CC_SP.mads.enabled) and self.frame % 4 == 0 and \
        not pcm_cancel_cmd and not CC.cruiseControl.resume and not icbm_sends:
       if self.lkas_button_send_remaining == 0 and CS.lkas_hud["LKAS_READY"] and self.frame >= self.last_lkas_button_frame + 500:
         self.lkas_button_send_remaining = 3

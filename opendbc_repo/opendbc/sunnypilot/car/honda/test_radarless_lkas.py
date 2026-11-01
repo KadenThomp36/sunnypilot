@@ -28,21 +28,36 @@ class TestRadarlessStockLkasProxy(unittest.TestCase):
     self.CS.cruise_buttons = 0
     self.parser = CANParser("honda_bosch_radarless_generated", [("SCM_BUTTONS", 0)], 2)
 
-  def _step(self, enabled: bool):
-    CC = structs.CarControl.new_message(enabled=enabled, latActive=enabled).as_reader()
-    _, sends = self.CI.apply(CC, structs.CarControlSP())
+  def _step(self, enabled: bool, mads: bool = False):
+    CC = structs.CarControl.new_message(enabled=enabled, latActive=enabled or mads).as_reader()
+    CC_SP = structs.CarControlSP()
+    CC_SP.mads.enabled = mads
+    _, sends = self.CI.apply(CC, CC_SP)
     return [s for s in sends if s[0] == SCM_BUTTONS]
 
   def _decode(self, msg):
     self.parser.update([(0, [msg])])
     return self.parser.vl["SCM_BUTTONS"]["CRUISE_BUTTONS"], self.parser.vl["SCM_BUTTONS"]["CRUISE_SETTING"]
 
-  def _run(self, frames, enabled=True):
-    return [m for _ in range(frames) for m in self._step(enabled)]
+  def _run(self, frames, enabled=True, mads=False):
+    return [m for _ in range(frames) for m in self._step(enabled, mads)]
 
   def test_nothing_sent_when_disengaged(self):
     self.CS.lkas_hud["LKAS_READY"] = 1
     self.assertEqual(self._run(400, enabled=False), [])
+
+  def test_mads_lateral_only(self):
+    # MADS lateral with ACC off (e.g. LKAS button pressed while driving manually): stock LKAS's nag would block
+    # engaging ACC, so proxy and keep stock LKAS off here too
+    self.CS.lkas_hud["LKAS_READY"] = 1
+    settings = [self._decode(m)[1] for m in self._run(100, enabled=False, mads=True)]
+    self.assertEqual(len(settings), 25)
+    self.assertEqual(settings[:3], [CruiseSettings.LKAS] * 3)
+
+    # the driver's SET still reaches the camera
+    self.CS.lkas_hud["LKAS_READY"] = 0
+    self.CS.cruise_buttons = CruiseButtons.DECEL_SET
+    self.assertEqual(self._decode(self._run(4, enabled=False, mads=True)[-1]), (CruiseButtons.DECEL_SET, 0))
 
   def test_proxies_at_25hz_on_camera_bus(self):
     msgs = self._run(100)

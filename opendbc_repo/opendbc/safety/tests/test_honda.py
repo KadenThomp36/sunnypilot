@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import itertools
 import unittest
 import numpy as np
 
@@ -607,19 +608,45 @@ class TestHondaBoschRadarlessSafetyBase(TestHondaBoschSafetyBase):
     self.packer = CANPackerSafety("honda_bosch_radarless_generated")
     self.safety = libsafety_py.libsafety
 
+  def _set_engagement(self, controls_allowed, controls_allowed_lateral, heartbeat_engaged_mads):
+    self.safety.set_controls_allowed(controls_allowed)
+    self.safety.set_controls_allowed_lateral(controls_allowed_lateral)
+    self.safety.set_heartbeat_engaged_mads(heartbeat_engaged_mads)
+    # openpilot proxies the buttons when ACC is engaged, or when MADS lateral is and openpilot agrees
+    return controls_allowed or (controls_allowed_lateral and heartbeat_engaged_mads)
+
   def test_buttons_fwd(self):
-    # SCM_BUTTONS (0x296) forwards to the camera only when disengaged, openpilot proxies it while engaged
-    self.safety.set_controls_allowed(False)
-    self.assertEqual(2, self.safety.safety_fwd_hook(0, 0x296))
-    self.safety.set_controls_allowed(True)
-    self.assertEqual(-1, self.safety.safety_fwd_hook(0, 0x296))
+    # SCM_BUTTONS (0x296) forwards to the camera only when disengaged, openpilot proxies it while engaged (ACC or MADS lateral)
+    for engagement in itertools.product((True, False), repeat=3):
+      proxied = self._set_engagement(*engagement)
+      self.assertEqual(-1 if proxied else 2, self.safety.safety_fwd_hook(0, 0x296), engagement)
 
   def test_lkas_setting_tx(self):
-    # proxied LKAS setting (CRUISE_SETTING=1) with no cruise button is only allowed while engaged
-    for controls_allowed in (True, False):
-      self.safety.set_controls_allowed(controls_allowed)
+    # proxied LKAS setting (CRUISE_SETTING=1) with no cruise button is only allowed while proxying
+    for engagement in itertools.product((True, False), repeat=3):
+      proxied = self._set_engagement(*engagement)
       msg = self.packer.make_can_msg_safety("SCM_BUTTONS", self.BUTTONS_BUS, {"CRUISE_BUTTONS": 0, "CRUISE_SETTING": 1})
-      self.assertEqual(controls_allowed, self._tx(msg))
+      self.assertEqual(proxied, self._tx(msg), engagement)
+
+  def test_mads_lateral_proxies_only_driver_buttons(self):
+    # with only MADS lateral engaged, openpilot may relay the cruise button the driver is pressing, never another one
+    def tx_button(btn):  # own counter, so the driver's button messages stay valid
+      return self._tx(self.packer.make_can_msg_safety("SCM_BUTTONS", self.BUTTONS_BUS, {"CRUISE_BUTTONS": btn}))
+
+    self._set_engagement(False, True, True)
+    for driver_btn in (Btn.NONE, Btn.MAIN, Btn.CANCEL, Btn.SET, Btn.RESUME):
+      self.assertTrue(self._rx(self._button_msg(driver_btn)))
+      for sent_btn in (Btn.NONE, Btn.MAIN, Btn.CANCEL, Btn.SET, Btn.RESUME):
+        should_tx = sent_btn in (Btn.NONE, Btn.CANCEL, driver_btn)
+        self.assertEqual(should_tx, tx_button(sent_btn), (driver_btn, sent_btn))
+        self.assertFalse(self.safety.get_controls_allowed())
+
+    # with nothing engaged, or MADS lateral that openpilot doesn't report (the panda forwards then), only cancel
+    for engagement in ((False, False, False), (False, False, True), (False, True, False)):
+      self._set_engagement(*engagement)
+      for btn in (Btn.NONE, Btn.MAIN, Btn.CANCEL, Btn.SET, Btn.RESUME):
+        self.assertTrue(self._rx(self._button_msg(btn)))
+        self.assertEqual(btn == Btn.CANCEL, tx_button(btn), (engagement, btn))
 
 
 class TestHondaBoschRadarlessSafety(HondaPcmEnableBase, TestHondaBoschRadarlessSafetyBase):
